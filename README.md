@@ -4,13 +4,6 @@ A small but realistic data platform for learning and for writing about Apache Su
 
 Read `docs/STATUS.md` first. It says plainly what was run and what was not.
 
-```
-source-db --(load)--> warehouse raw --(dbt)--> staging --> marts --> Superset
-                          |                                   ^
-                          +--> ops (audit, drift, quality) ----+
-Airflow runs load, checks and dbt. A simulator makes the source change every day.
-```
-
 ## Quick start (Docker)
 ```
 make setup && make up        # slow the first time
