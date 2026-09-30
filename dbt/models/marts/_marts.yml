@@ -1,0 +1,126 @@
+version: 2
+
+models:
+  - name: dim_customers
+    description: One row per customer with current attributes.
+    columns:
+      - name: customer_id
+        data_tests: [unique, not_null]
+
+  - name: dim_customers_history
+    description: >
+      Type 2 slowly changing dimension. One row per (customer, period) with
+      valid_from / valid_to; is_current marks the open period. Join orders to it
+      with  order_ts >= valid_from and order_ts < valid_to.
+    columns:
+      - name: customer_id
+        data_tests: [not_null]
+      - name: valid_from
+        data_tests: [not_null]
+      - name: valid_to
+        data_tests: [not_null]
+
+  - name: dim_products
+    columns:
+      - name: product_id
+        data_tests: [unique, not_null]
+
+  - name: fct_orders
+    description: >
+      One row per order with money computed once. Incremental: an order is
+      recomputed whenever its newest source version changes. The column list is
+      a contract: adding, removing or retyping a column fails the build instead
+      of silently changing what dashboards receive.
+    config:
+      contract:
+        enforced: true
+    columns:
+      - name: order_id
+        data_type: integer
+        data_tests: [unique, not_null]
+      - name: customer_id
+        data_type: integer
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customers')
+                field: customer_id
+      - name: order_ts
+        data_type: timestamp with time zone
+      - name: order_date
+        data_type: date
+      - name: status
+        data_type: text
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['pending', 'completed', 'cancelled', 'refunded']
+      - name: channel
+        data_type: text
+      - name: discount_pct
+        data_type: numeric
+      - name: country
+        description: Country the customer lived in WHEN THE ORDER WAS PLACED.
+        data_type: text
+        data_tests: [not_null]
+      - name: segment
+        data_type: text
+      - name: items_count
+        data_type: integer
+      - name: units
+        data_type: integer
+      - name: gross_revenue
+        data_type: numeric
+      - name: discount_amount
+        data_type: numeric
+      - name: net_revenue
+        description: Gross revenue after the order-level discount.
+        data_type: numeric
+      - name: cogs
+        data_type: numeric
+      - name: gross_margin
+        data_type: numeric
+      - name: is_completed
+        data_type: boolean
+      - name: order_updated_at
+        description: Newest change to the order row or any of its line items. Drives the incremental filter.
+        data_type: timestamp with time zone
+
+  - name: fct_order_items
+    columns:
+      - name: order_item_id
+        data_tests: [unique, not_null]
+
+  - name: mart_daily_channel
+    description: Completed revenue per day and channel.
+    columns:
+      - name: order_date
+        data_tests: [not_null]
+      - name: channel
+        data_tests: [not_null]
+
+  - name: mart_funnel_daily
+    columns:
+      - name: funnel_key
+        data_tests: [unique, not_null]
+      - name: stage
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['Page view', 'Product view', 'Add to cart', 'Begin checkout', 'Purchase']
+
+  - name: mart_cohort_retention
+    columns:
+      - name: retention_rate
+        description: Share of the cohort with a completed order in that month. Always between 0 and 1.
+
+  - name: mart_customer_rfm
+    columns:
+      - name: customer_id
+        data_tests: [unique, not_null]
+      - name: rfm_segment
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['Champions', 'Loyal', 'Recent', 'At risk', 'Needs attention']

@@ -1,0 +1,19 @@
+version: 2
+
+sources:
+  - name: raw
+    description: >
+      Append-only change log of the shop's application database, written by the
+      ingestion pipeline (python -m pipeline load). One row per observed version
+      of each source row.
+    schema: raw
+    loaded_at_field: _loaded_at
+    freshness:
+      warn_after: {count: 26, period: hour}
+      error_after: {count: 50, period: hour}
+    tables:
+      - name: customers
+      - name: products
+      - name: orders
+      - name: order_items
+      - name: web_events

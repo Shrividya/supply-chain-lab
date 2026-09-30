@@ -1,0 +1,223 @@
+name: shop-data-platform
+
+#   make setup && make up      # platform + Superset + Airflow
+#   make demo                  # load data, run dbt, build dashboards
+
+x-platform-build: &platform-build
+  build: {context: ., dockerfile: docker/platform.Dockerfile}
+  image: shop-platform:1
+
+x-superset-build: &superset-build
+  build: {context: ., dockerfile: docker/superset.Dockerfile}
+  image: shop-superset:6.1.0
+
+x-superset-env: &superset-env
+  SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-dev-only-secret}
+  SUPERSET_CONFIG_PATH: /app/superset_config.py
+  METADATA_DB_HOST: metadata-db
+  METADATA_DB_PORT: "5432"
+  METADATA_DB_NAME: ${METADATA_DB_NAME:-superset}
+  METADATA_DB_USER: ${METADATA_DB_USER:-superset}
+  METADATA_DB_PASSWORD: ${METADATA_DB_PASSWORD:-superset}
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  SUPERSET_ADMIN_USER: ${SUPERSET_ADMIN_USER:-admin}
+  SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-admin}
+
+x-pipeline-env: &pipeline-env
+  SOURCE_DSN: postgresql://pipeline_ro:pipeline_ro@source-db:5432/source
+  SOURCE_ADMIN_DSN: postgresql://source_admin:source_admin@source-db:5432/source
+  WAREHOUSE_DSN: postgresql://loader:loader@warehouse:5432/warehouse
+  WAREHOUSE_HOST: warehouse
+  WAREHOUSE_PORT: "5432"
+  DBT_TARGET_PATH: /tmp/dbt/target
+  DBT_LOG_PATH: /tmp/dbt/logs
+  DBT_PROFILES_DIR: /opt/airflow/dbt
+
+x-airflow-env: &airflow-env
+  <<: *pipeline-env
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@metadata-db:5432/airflow
+  AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-}
+  AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:-dev-only-jwt-secret-change-me}
+  AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+  AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
+  AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: "30"
+
+x-airflow-volumes: &airflow-volumes
+  - ./airflow/dags:/opt/airflow/dags:ro
+  - ./pipeline:/opt/airflow/platform/pipeline:ro
+  - ./dbt:/opt/airflow/dbt:ro
+
+x-airflow-common: &airflow-common
+  <<: *platform-build
+  environment: *airflow-env
+  volumes: *airflow-volumes
+  user: "50000:0"
+  depends_on:
+    metadata-db: {condition: service_healthy}
+    warehouse: {condition: service_healthy}
+    source-db: {condition: service_healthy}
+
+services:
+  # the pretend production system (what a real company would already have)
+  source-db:
+    image: postgres:16
+    environment: {POSTGRES_DB: source, POSTGRES_USER: source_admin, POSTGRES_PASSWORD: source_admin}
+    ports: ["${SOURCE_PORT:-5434}:5432"]
+    volumes:
+      - source-data:/var/lib/postgresql/data
+      - ./source:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U source_admin -d source && psql -U source_admin -d source -Atc \"select to_regprocedure('sim.advance_day(integer,integer)') is not null\" | grep -q t"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+
+  # the warehouse we build
+  warehouse:
+    image: postgres:16
+    environment: {POSTGRES_DB: warehouse, POSTGRES_USER: warehouse_admin, POSTGRES_PASSWORD: warehouse_admin}
+    ports: ["${WAREHOUSE_PORT:-5433}:5432"]
+    volumes:
+      - warehouse-data:/var/lib/postgresql/data
+      - ./warehouse:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U warehouse_admin -d warehouse && psql -U warehouse_admin -d warehouse -Atc \"select to_regclass('ops.dq_results') is not null\" | grep -q t"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+
+  # state for Superset and Airflow
+  metadata-db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${METADATA_DB_NAME:-superset}
+      POSTGRES_USER: ${METADATA_DB_USER:-superset}
+      POSTGRES_PASSWORD: ${METADATA_DB_PASSWORD:-superset}
+    volumes:
+      - metadata-data:/var/lib/postgresql/data
+      - ./docker/metadata-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${METADATA_DB_USER:-superset} -d ${METADATA_DB_NAME:-superset}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    healthcheck: {test: ["CMD", "redis-cli", "ping"], interval: 5s, timeout: 3s, retries: 20}
+
+  # Airflow
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        airflow db migrate
+        echo "airflow initialised"
+    restart: "no"
+
+  airflow-apiserver:
+    <<: *airflow-common
+    command: ["api-server"]
+    ports: ["${AIRFLOW_PORT:-8080}:8080"]
+    depends_on:
+      airflow-init: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: ["dag-processor"]
+    depends_on:
+      airflow-init: {condition: service_completed_successfully}
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: ["scheduler"]
+    depends_on:
+      airflow-init: {condition: service_completed_successfully}
+      airflow-apiserver: {condition: service_healthy}
+
+  # Superset
+  superset-init:
+    <<: *superset-build
+    command: ["bash", "/lab/init.sh"]
+    environment: *superset-env
+    volumes:
+      - ./docker/superset_config.py:/app/superset_config.py:ro
+      - ./docker/init.sh:/lab/init.sh:ro
+    depends_on:
+      metadata-db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    restart: "no"
+
+  superset:
+    <<: *superset-build
+    command: [gunicorn, --bind=0.0.0.0:8088, --workers=2, --worker-class=gthread, --threads=4,
+              --timeout=120, --limit-request-line=0, --limit-request-field_size=0,
+              --access-logfile=-, --error-logfile=-, "superset.app:create_app()"]
+    environment: *superset-env
+    ports: ["${SUPERSET_PORT:-8088}:8088"]
+    volumes: [./docker/superset_config.py:/app/superset_config.py:ro]
+    depends_on:
+      superset-init: {condition: service_completed_successfully}
+      warehouse: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8088/health', timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  superset-worker:
+    <<: *superset-build
+    command: ["celery", "--app=superset.tasks.celery_app:app", "worker", "--pool=prefork", "-O", "fair", "-c", "2"]
+    environment: *superset-env
+    volumes: [./docker/superset_config.py:/app/superset_config.py:ro]
+    depends_on:
+      superset-init: {condition: service_completed_successfully}
+
+  # one-shot helpers, only started on demand (`--profile tools`)
+  pipeline:
+    <<: *platform-build
+    profiles: [tools]
+    environment: *pipeline-env
+    volumes: *airflow-volumes
+    working_dir: /opt/airflow/platform
+    entrypoint: ["python", "-m", "pipeline"]
+    depends_on:
+      warehouse: {condition: service_healthy}
+      source-db: {condition: service_healthy}
+
+  dbt:
+    <<: *platform-build
+    profiles: [tools]
+    environment: *pipeline-env
+    volumes: *airflow-volumes
+    working_dir: /opt/airflow/dbt
+    entrypoint: ["/opt/dbt-venv/bin/dbt"]
+    depends_on:
+      warehouse: {condition: service_healthy}
+
+  provision:
+    <<: *superset-build
+    profiles: [tools]
+    command: ["python", "/lab/provision.py"]
+    environment:
+      <<: *superset-env
+      SUPERSET_URL: http://superset:8088
+    volumes: [./provisioning/provision.py:/lab/provision.py:ro]
+    depends_on:
+      superset: {condition: service_healthy}
+
+volumes:
+  source-data:
+  warehouse-data:
+  metadata-data:

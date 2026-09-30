@@ -1,0 +1,15 @@
+# Connection details come from environment variables so the same project runs
+# in Docker, CI and on a laptop. dbt connects as dbt_user: it may read raw.*
+# and create objects in staging.* and marts.*, and nothing else.
+shop:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('WAREHOUSE_HOST', 'warehouse') }}"
+      port: "{{ env_var('WAREHOUSE_PORT', '5432') | as_number }}"
+      user: "{{ env_var('DBT_USER', 'dbt_user') }}"
+      password: "{{ env_var('DBT_PASSWORD', 'dbt_user') }}"
+      dbname: "{{ env_var('WAREHOUSE_DB', 'warehouse') }}"
+      schema: staging
+      threads: 4

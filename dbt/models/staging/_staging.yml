@@ -1,0 +1,63 @@
+version: 2
+
+models:
+  - name: stg_customers
+    description: Current state of each customer (email hashed).
+    columns:
+      - name: customer_id
+        data_tests: [unique, not_null]
+      - name: email_hash
+        description: md5 of the lower-cased email. The raw email never leaves the raw schema.
+
+  - name: stg_products
+    columns:
+      - name: product_id
+        data_tests: [unique, not_null]
+
+  - name: stg_orders
+    description: Current state of each order.
+    columns:
+      - name: order_id
+        data_tests: [unique, not_null]
+      - name: customer_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_customers')
+                field: customer_id
+      - name: status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['pending', 'completed', 'cancelled', 'refunded']
+      - name: channel
+        description: Acquisition channel of the order. Null means the app did not record it.
+        data_tests: [not_null]
+
+  - name: stg_order_items
+    columns:
+      - name: order_item_id
+        data_tests: [unique, not_null]
+      - name: order_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_orders')
+                field: order_id
+      - name: product_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_products')
+                field: product_id
+
+  - name: stg_web_events
+    columns:
+      - name: event_id
+        data_tests: [unique, not_null]
+      - name: event_type
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['page_view', 'product_view', 'add_to_cart', 'begin_checkout', 'purchase']

@@ -1,0 +1,5 @@
+.env
+exports/
+*.zip
+__pycache__/
+.env.example

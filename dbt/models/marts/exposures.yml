@@ -1,0 +1,19 @@
+version: 2
+
+exposures:
+  - name: shop_overview_dashboard
+    label: Shop Overview (Superset)
+    type: dashboard
+    maturity: medium
+    url: http://localhost:8088/superset/dashboard/shop-overview/
+    description: Revenue, orders, channels, funnel and customer value for the shop.
+    depends_on:
+      - ref('fct_orders')
+      - ref('fct_order_items')
+      - ref('mart_daily_channel')
+      - ref('mart_funnel_daily')
+      - ref('mart_cohort_retention')
+      - ref('mart_customer_rfm')
+    owner:
+      name: Data Platform
+      email: analytics@example.com
