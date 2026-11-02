@@ -10,13 +10,6 @@ DBT     = $(COMPOSE) --profile tools run --rm dbt
 help: ## Show this list
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
-setup: ## Create .env with random secrets
-	@if [ -f .env ]; then echo ".env exists, leaving it alone"; else \
-	  cp .env.example .env; \
-	  sed -i.bak "s|^SUPERSET_SECRET_KEY=.*|SUPERSET_SECRET_KEY=$$(openssl rand -base64 42 | tr -d '\n/+=')|; \
-	              s|^AIRFLOW_JWT_SECRET=.*|AIRFLOW_JWT_SECRET=$$(openssl rand -base64 32 | tr -d '\n/+=')|" .env && rm -f .env.bak; \
-	  echo "Wrote .env"; fi
-
 up: ## Start source, warehouse, Airflow and Superset (first run is slow: images + 290k seed rows)
 	$(COMPOSE) up -d --build
 	@echo "Airflow  http://localhost:$${AIRFLOW_PORT:-8080}    Superset http://localhost:$${SUPERSET_PORT:-8088} (admin/admin)"
